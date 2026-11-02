@@ -1,0 +1,482 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.2'
+
+      - name: Crear proyecto
+        run: |
+          mkdir -p "proyecto/app"
+          cat > "proyecto/app/build.gradle" <<'FIN_DEL_ARCHIVO'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.mi.launcher'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId "com.mi.launcher"
+                  minSdk 21
+                  targetSdk 33
+                  versionCode 1
+                  versionName "1.0"
+              }
+
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_1_8
+                  targetCompatibility JavaVersion.VERSION_1_8
+              }
+          }
+          FIN_DEL_ARCHIVO
+          mkdir -p "proyecto/app/src/main"
+          cat > "proyecto/app/src/main/AndroidManifest.xml" <<'FIN_DEL_ARCHIVO'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+
+              <uses-feature
+                  android:name="android.hardware.touchscreen"
+                  android:required="false" />
+              <uses-feature
+                  android:name="android.software.leanback"
+                  android:required="false" />
+
+              <queries>
+                  <intent>
+                      <action android:name="android.intent.action.MAIN" />
+                      <category android:name="android.intent.category.LAUNCHER" />
+                  </intent>
+                  <intent>
+                      <action android:name="android.intent.action.MAIN" />
+                      <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+                  </intent>
+              </queries>
+
+              <application
+                  android:allowBackup="false"
+                  android:hardwareAccelerated="true"
+                  android:label="@string/app_name"
+                  android:theme="@style/AppTheme">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:configChanges="orientation|screenSize|keyboardHidden|keyboard|navigation"
+                      android:exported="true"
+                      android:launchMode="singleTask"
+                      android:stateNotNeeded="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.HOME" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                          <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          FIN_DEL_ARCHIVO
+          mkdir -p "proyecto/app/src/main/java/com/mi/launcher"
+          cat > "proyecto/app/src/main/java/com/mi/launcher/MainActivity.java" <<'FIN_DEL_ARCHIVO'
+          package com.mi.launcher;
+
+          import android.app.Activity;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.pm.PackageManager;
+          import android.content.pm.ResolveInfo;
+          import android.net.ConnectivityManager;
+          import android.net.NetworkInfo;
+          import android.net.wifi.WifiInfo;
+          import android.net.wifi.WifiManager;
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.view.LayoutInflater;
+          import android.view.View;
+          import android.widget.ImageView;
+          import android.widget.LinearLayout;
+          import android.widget.TextView;
+
+          import java.util.ArrayList;
+          import java.util.Collections;
+          import java.util.Comparator;
+          import java.util.HashSet;
+          import java.util.List;
+          import java.util.Set;
+
+          public class MainActivity extends Activity {
+
+              private static class App {
+                  String nombre;
+                  String paquete;
+                  String clase;
+                  ResolveInfo info;
+              }
+
+              private LinearLayout fila;
+              private TextView wifi;
+              private String firma = "";
+              private final Handler handler = new Handler(Looper.getMainLooper());
+
+              private final Runnable actualizar = new Runnable() {
+                  @Override
+                  public void run() {
+                      actualizarWifi();
+                      handler.postDelayed(this, 30000);
+                  }
+              };
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  setContentView(R.layout.activity_main);
+                  fila = (LinearLayout) findViewById(R.id.fila);
+                  wifi = (TextView) findViewById(R.id.wifi);
+              }
+
+              @Override
+              protected void onResume() {
+                  super.onResume();
+                  cargarApps();
+                  handler.removeCallbacks(actualizar);
+                  handler.post(actualizar);
+              }
+
+              @Override
+              protected void onPause() {
+                  super.onPause();
+                  handler.removeCallbacks(actualizar);
+              }
+
+              @Override
+              protected void onNewIntent(Intent intent) {
+                  super.onNewIntent(intent);
+                  // Al pulsar el boton Home, volver al primer icono
+                  if (fila.getChildCount() > 0) {
+                      fila.getChildAt(0).requestFocus();
+                  }
+              }
+
+              @Override
+              public void onBackPressed() {
+                  // El launcher no se cierra con Atras
+              }
+
+              private void cargarApps() {
+                  PackageManager pm = getPackageManager();
+                  Set<String> vistos = new HashSet<String>();
+                  List<App> apps = new ArrayList<App>();
+                  String[] categorias = {
+                          Intent.CATEGORY_LAUNCHER,
+                          Intent.CATEGORY_LEANBACK_LAUNCHER
+                  };
+
+                  for (String categoria : categorias) {
+                      Intent intent = new Intent(Intent.ACTION_MAIN);
+                      intent.addCategory(categoria);
+                      List<ResolveInfo> lista = pm.queryIntentActivities(intent, 0);
+                      for (ResolveInfo ri : lista) {
+                          String paquete = ri.activityInfo.packageName;
+                          if (paquete.equals(getPackageName())) continue;
+                          if (!vistos.add(paquete)) continue;
+                          App app = new App();
+                          app.nombre = String.valueOf(ri.loadLabel(pm));
+                          app.paquete = paquete;
+                          app.clase = ri.activityInfo.name;
+                          app.info = ri;
+                          apps.add(app);
+                      }
+                  }
+
+                  Collections.sort(apps, new Comparator<App>() {
+                      @Override
+                      public int compare(App a, App b) {
+                          return a.nombre.compareToIgnoreCase(b.nombre);
+                      }
+                  });
+
+                  StringBuilder sb = new StringBuilder();
+                  for (App app : apps) {
+                      sb.append(app.paquete).append('/').append(app.clase).append(';');
+                  }
+                  String nuevaFirma = sb.toString();
+                  if (nuevaFirma.equals(firma) && fila.getChildCount() > 0) {
+                      return; // nada cambio, no reconstruir
+                  }
+                  firma = nuevaFirma;
+
+                  fila.removeAllViews();
+                  LayoutInflater inflater = LayoutInflater.from(this);
+                  for (final App app : apps) {
+                      View item = inflater.inflate(R.layout.item_app, fila, false);
+                      ImageView icono = (ImageView) item.findViewById(R.id.icono);
+                      TextView nombre = (TextView) item.findViewById(R.id.nombre);
+                      icono.setImageDrawable(app.info.loadIcon(pm));
+                      nombre.setText(app.nombre);
+                      item.setOnClickListener(new View.OnClickListener() {
+                          @Override
+                          public void onClick(View v) {
+                              abrir(app);
+                          }
+                      });
+                      fila.addView(item);
+                  }
+
+                  if (fila.getChildCount() > 0) {
+                      fila.getChildAt(0).requestFocus();
+                  }
+              }
+
+              private void abrir(App app) {
+                  try {
+                      Intent intent = new Intent(Intent.ACTION_MAIN);
+                      intent.addCategory(Intent.CATEGORY_LAUNCHER);
+                      intent.setClassName(app.paquete, app.clase);
+                      intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                              | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+                      startActivity(intent);
+                  } catch (Exception e) {
+                      // si la app no se puede abrir, no hacer nada
+                  }
+              }
+
+              private void actualizarWifi() {
+                  String texto = "Sin WiFi";
+                  try {
+                      ConnectivityManager cm =
+                              (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+                      NetworkInfo ni = cm.getActiveNetworkInfo();
+                      if (ni != null && ni.isConnected()) {
+                          if (ni.getType() == ConnectivityManager.TYPE_WIFI) {
+                              texto = "WiFi conectado";
+                              WifiManager wm = (WifiManager) getApplicationContext()
+                                      .getSystemService(Context.WIFI_SERVICE);
+                              WifiInfo info = wm.getConnectionInfo();
+                              if (info != null && info.getSSID() != null) {
+                                  String ssid = info.getSSID().replace("\"", "");
+                                  if (!ssid.isEmpty() && !ssid.contains("unknown")) {
+                                      texto = "WiFi: " + ssid;
+                                  }
+                              }
+                          } else if (ni.getType() == ConnectivityManager.TYPE_ETHERNET) {
+                              texto = "Ethernet";
+                          }
+                      }
+                  } catch (Exception e) {
+                      // dejar el texto por defecto
+                  }
+                  wifi.setText(texto);
+              }
+          }
+          FIN_DEL_ARCHIVO
+          mkdir -p "proyecto/app/src/main/res/drawable"
+          cat > "proyecto/app/src/main/res/drawable/fondo_foco.xml" <<'FIN_DEL_ARCHIVO'
+          <?xml version="1.0" encoding="utf-8"?>
+          <selector xmlns:android="http://schemas.android.com/apk/res/android">
+              <item android:state_focused="true">
+                  <shape android:shape="rectangle">
+                      <solid android:color="@color/foco" />
+                      <corners android:radius="14dp" />
+                      <stroke
+                          android:width="2dp"
+                          android:color="#FFFFFF" />
+                  </shape>
+              </item>
+              <item android:state_pressed="true">
+                  <shape android:shape="rectangle">
+                      <solid android:color="@color/foco" />
+                      <corners android:radius="14dp" />
+                  </shape>
+              </item>
+              <item>
+                  <shape android:shape="rectangle">
+                      <solid android:color="#00000000" />
+                      <corners android:radius="14dp" />
+                  </shape>
+              </item>
+          </selector>
+          FIN_DEL_ARCHIVO
+          mkdir -p "proyecto/app/src/main/res/layout"
+          cat > "proyecto/app/src/main/res/layout/activity_main.xml" <<'FIN_DEL_ARCHIVO'
+          <?xml version="1.0" encoding="utf-8"?>
+          <RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:background="@color/fondo">
+
+              <LinearLayout
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:layout_alignParentTop="true"
+                  android:layout_alignParentRight="true"
+                  android:gravity="center_vertical"
+                  android:orientation="horizontal"
+                  android:padding="24dp">
+
+                  <TextView
+                      android:id="@+id/wifi"
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:textColor="@color/texto_suave"
+                      android:textSize="14sp" />
+
+                  <TextClock
+                      android:id="@+id/reloj"
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:layout_marginLeft="16dp"
+                      android:format12Hour="HH:mm"
+                      android:format24Hour="HH:mm"
+                      android:textColor="#FFFFFF"
+                      android:textSize="16sp" />
+              </LinearLayout>
+
+              <HorizontalScrollView
+                  android:id="@+id/scroll"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:layout_alignParentBottom="true"
+                  android:fillViewport="true"
+                  android:overScrollMode="never"
+                  android:paddingBottom="32dp"
+                  android:scrollbars="none">
+
+                  <LinearLayout
+                      android:id="@+id/fila"
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:gravity="center"
+                      android:orientation="horizontal"
+                      android:paddingLeft="24dp"
+                      android:paddingRight="24dp" />
+              </HorizontalScrollView>
+          </RelativeLayout>
+          FIN_DEL_ARCHIVO
+          mkdir -p "proyecto/app/src/main/res/layout"
+          cat > "proyecto/app/src/main/res/layout/item_app.xml" <<'FIN_DEL_ARCHIVO'
+          <?xml version="1.0" encoding="utf-8"?>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="120dp"
+              android:layout_height="wrap_content"
+              android:layout_margin="6dp"
+              android:background="@drawable/fondo_foco"
+              android:clickable="true"
+              android:focusable="true"
+              android:gravity="center_horizontal"
+              android:orientation="vertical"
+              android:padding="10dp">
+
+              <ImageView
+                  android:id="@+id/icono"
+                  android:layout_width="64dp"
+                  android:layout_height="64dp"
+                  android:scaleType="fitCenter" />
+
+              <TextView
+                  android:id="@+id/nombre"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:layout_marginTop="8dp"
+                  android:ellipsize="end"
+                  android:gravity="center"
+                  android:maxLines="1"
+                  android:textColor="#FFFFFF"
+                  android:textSize="13sp" />
+          </LinearLayout>
+          FIN_DEL_ARCHIVO
+          mkdir -p "proyecto/app/src/main/res/values"
+          cat > "proyecto/app/src/main/res/values/colors.xml" <<'FIN_DEL_ARCHIVO'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="fondo">#0B1F4B</color>
+              <color name="foco">#2F5DB5</color>
+              <color name="texto_suave">#B8C7E6</color>
+          </resources>
+          FIN_DEL_ARCHIVO
+          mkdir -p "proyecto/app/src/main/res/values"
+          cat > "proyecto/app/src/main/res/values/strings.xml" <<'FIN_DEL_ARCHIVO'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">Mi Launcher</string>
+          </resources>
+          FIN_DEL_ARCHIVO
+          mkdir -p "proyecto/app/src/main/res/values"
+          cat > "proyecto/app/src/main/res/values/styles.xml" <<'FIN_DEL_ARCHIVO'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="AppTheme" parent="android:Theme.Material.NoActionBar">
+                  <item name="android:windowBackground">@color/fondo</item>
+                  <item name="android:statusBarColor">@color/fondo</item>
+                  <item name="android:navigationBarColor">@color/fondo</item>
+              </style>
+          </resources>
+          FIN_DEL_ARCHIVO
+          cat > "proyecto/build.gradle" <<'FIN_DEL_ARCHIVO'
+          plugins {
+              id 'com.android.application' version '8.1.4' apply false
+          }
+          FIN_DEL_ARCHIVO
+          cat > "proyecto/gradle.properties" <<'FIN_DEL_ARCHIVO'
+          org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8
+          android.useAndroidX=false
+          android.nonTransitiveRClass=true
+          FIN_DEL_ARCHIVO
+          cat > "proyecto/settings.gradle" <<'FIN_DEL_ARCHIVO'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "MiLauncher"
+          include ':app'
+          FIN_DEL_ARCHIVO
+
+      - name: Compilar APK
+        working-directory: proyecto
+        run: gradle assembleDebug --no-daemon
+
+      - name: Renombrar APK
+        run: cp proyecto/app/build/outputs/apk/debug/app-debug.apk launcher.apk
+
+      - name: Publicar en Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: Launcher v${{ github.run_number }}
+          files: launcher.apk
